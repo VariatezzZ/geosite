@@ -1,0 +1,44 @@
+{
+  "targets": {
+    "cn": {
+      "base_list": "cn",
+      "exclude_lists": ["geolocation-!cn"]
+    },
+    "category-ads-all": {
+      "base_list": "category-ads-all",
+      "exclude_lists": []
+    }
+  },
+  "sources": [
+    {
+      "name": "china-domains",
+      "url": "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf",
+      "format": "dnsmasq",
+      "target": "cn"
+    },
+    {
+      "name": "easylistchina",
+      "url": "https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt",
+      "format": "abp",
+      "target": "category-ads-all"
+    },
+    {
+      "name": "adguarddns",
+      "url": "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+      "format": "abp",
+      "target": "category-ads-all"
+    },
+    {
+      "name": "yoyo",
+      "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext",
+      "format": "hosts",
+      "target": "category-ads-all"
+    },
+    {
+      "name": "someonewhocares",
+      "url": "https://someonewhocares.org/hosts/hosts",
+      "format": "hosts",
+      "target": "category-ads-all"
+    }
+  ]
+}

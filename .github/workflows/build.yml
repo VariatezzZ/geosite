@@ -1,0 +1,94 @@
+name: Build geosite.dat
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * *"
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v7
+        with:
+          path: self
+
+      - name: Checkout v2fly/domain-list-community (latest)
+        uses: actions/checkout@v7
+        with:
+          repository: v2fly/domain-list-community
+          path: community
+
+      - name: Record upstream commit
+        id: upstream
+        run: echo "sha=$(git -C community rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: community/go.mod
+          cache-dependency-path: community/go.sum
+
+      - name: Export base lists (flattened and deduplicated by upstream)
+        run: |
+          cd community
+          go run ./ --outputdir=../base --outputname=base.dat \
+            --exportlists=cn,geolocation-!cn,category-ads-all
+
+      - name: Merge external sources into the data directory
+        run: |
+          cd self
+          go run ./cmd/merge \
+            --community ../community \
+            --base ../base \
+            --config ./config/sources.json \
+            --report ../publish/build-info.json \
+            --upstream-sha "${{ steps.upstream.outputs.sha }}"
+
+      - name: Build geosite.dat
+        run: |
+          cd community
+          go run ./ --outputdir=../publish --outputname=geosite.dat
+
+      - name: Health checks
+        run: |
+          cd self
+          go run ./cmd/verify \
+            --dat ../publish/geosite.dat \
+            --basedat ../base/base.dat \
+            --report ../publish/verify.json
+
+      - name: Generate sha256
+        run: |
+          cd publish
+          sha256sum geosite.dat > geosite.dat.sha256sum
+          cat geosite.dat.sha256sum
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(date -u +%Y%m%d%H%M%S)
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "Upstream v2fly/domain-list-community commit: ${{ steps.upstream.outputs.sha }}" \
+            --latest \
+            ./publish/geosite.dat \
+            ./publish/geosite.dat.sha256sum \
+            ./publish/build-info.json \
+            ./publish/verify.json

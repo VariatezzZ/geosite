@@ -1,0 +1,15 @@
+# Build working directories
+/base/
+/community/
+/inputs/
+/verify/
+/publish/
+/.cache/
+
+# Binaries
+/geosite
+/merge
+/verify-bin
+*.exe
+*.dat
+*.sha256sum
