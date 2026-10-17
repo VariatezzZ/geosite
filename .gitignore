@@ -13,3 +13,4 @@
 *.exe
 *.dat
 *.sha256sum
+/HANDOVER.md
