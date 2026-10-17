@@ -7,8 +7,11 @@ on:
   push:
     branches:
       - master
-    paths-ignore:
-      - "**/*.md"
+    paths:
+      - ".github/workflows/build.yml"
+      - "cmd/**"
+      - "config/**"
+      - "go.mod"
 
 permissions:
   contents: write
