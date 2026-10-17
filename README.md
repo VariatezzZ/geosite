@@ -29,7 +29,7 @@
 
 ```
 .
-├─ .github/workflows/build.yml   构建流程（定时 + 手动触发）
+├─ .github/workflows/build.yml   构建流程（定时 + 手动触发 + 构建相关文件变更时自动触发）
 ├─ cmd/merge/main.go             展开比对、去重、冲突过滤、追加数据
 ├─ cmd/verify/main.go            产物体检（自带的轻量 protobuf 解析）
 └─ config/sources.json           外部源定义（URL / 格式 / 目标清单）
@@ -76,4 +76,4 @@ geosite:geolocation-!cn
 - **`geolocation-!cn` 与基底逐条一致**（「基底优先」策略的不变式）；
 - 产物体积区间。
 
-任一检查不过 → 构建失败并邮件告警，同时 `build-info.json` 里带上游 commit SHA，便于回溯定位是哪次上游变更引起。
+任一检查不过 → 构建失败（能否收到通知取决于你的 GitHub 账号通知设置，本仓库未内置告警），同时 `build-info.json` 里带上游 commit SHA，便于回溯定位是哪次上游变更引起。
