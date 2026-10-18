@@ -1,6 +1,6 @@
 # geosite
 
-每日定时构建 `geosite.dat`：以 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) 的**最新数据**为基底，叠加**中国域名**与**广告域名**，去重后打包。
+每日定时构建 `geosite.dat`：以 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) 的**最新数据**为基底，依据 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) 的增强思路，叠加**中国域名**与**广告域名**，去重后打包。
 
 ## 与官方 `dlc.dat` 的区别
 
