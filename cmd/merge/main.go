@@ -166,7 +166,10 @@ func isIPv4(s string) bool {
 func normalize(s string) (string, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.Trim(s, ".")
-	if s == "" || isIPv4(s) || !validDomain(s) {
+	// 裸 TLD（如 dnsmasq 的 server=/top/114.114.114.114、hosts 的 0.0.0.0 localhost）
+	// 展开后是 domain:top / domain:localhost，会让整个后缀命中目标清单、误伤境外站点，
+	// 故外部源中的裸 TLD 一律不添加；整 TLD 的归属只由基底 tld-cn / tld-!cn 决定。
+	if s == "" || !strings.Contains(s, ".") || isIPv4(s) || !validDomain(s) {
 		return "", false
 	}
 	return s, true
