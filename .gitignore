@@ -10,6 +10,7 @@
 /geosite
 /merge
 /verify-bin
+/lookup/lookup
 *.exe
 *.dat
 *.sha256sum
