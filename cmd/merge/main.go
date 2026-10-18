@@ -16,7 +16,9 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,19 +38,22 @@ const (
 
 type Target struct {
 	BaseList     string   `json:"base_list"`
+	BaseOptional bool     `json:"base_optional"`
 	ExcludeLists []string `json:"exclude_lists"`
 }
 
 type Source struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Format string `json:"format"`
-	Target string `json:"target"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Format    string `json:"format"`
+	Target    string `json:"target"`
+	Reference bool   `json:"reference"`
 }
 
 type Config struct {
-	Targets map[string]Target `json:"targets"`
-	Sources []Source          `json:"sources"`
+	Targets  map[string]Target   `json:"targets"`
+	Includes map[string][]string `json:"includes"`
+	Sources  []Source            `json:"sources"`
 }
 
 // ruleSet is the flattened view of one base list.
@@ -178,6 +183,26 @@ func normalize(s string) (string, bool) {
 // extract pulls domains out of a downloaded source according to its format.
 func extract(format string, r io.Reader) ([]string, error) {
 	seen := map[string]struct{}{}
+
+	if format == "gfwlist" {
+		body, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := decodeBase64Text(body)
+		if err != nil {
+			return nil, fmt.Errorf("gfwlist base64: %w", err)
+		}
+		for _, line := range strings.Split(decoded, "\n") {
+			if tok, ok := autoproxyToken(line); ok {
+				if d, ok := normalize(tok); ok {
+					seen[d] = struct{}{}
+				}
+			}
+		}
+		return mapKeys(seen), nil
+	}
+
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -219,6 +244,15 @@ func extract(format string, r io.Reader) ([]string, error) {
 				continue
 			}
 			raw = fields[1]
+		case "clash":
+			//   - 'example.com'   /   - '+.example.com'
+			f := strings.TrimSpace(line)
+			if !strings.HasPrefix(f, "-") {
+				continue
+			}
+			f = strings.TrimSpace(strings.TrimPrefix(f, "-"))
+			f = strings.Trim(f, "'\"")
+			raw = strings.TrimPrefix(f, "+.")
 		default:
 			return nil, fmt.Errorf("unknown source format %q", format)
 		}
@@ -229,11 +263,65 @@ func extract(format string, r io.Reader) ([]string, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(seen))
-	for d := range seen {
-		out = append(out, d)
+	return mapKeys(seen), nil
+}
+
+// mapKeys returns the keys of a set as an unsorted slice.
+func mapKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	return out, nil
+	return out
+}
+
+// decodeBase64Text strips all whitespace, then base64-decodes the whole input.
+// The GFWList file is a base64-encoded AutoProxy list.
+func decodeBase64Text(b []byte) (string, error) {
+	var sb strings.Builder
+	sb.Grow(len(b))
+	for _, c := range b {
+		if c == '\n' || c == '\r' || c == ' ' || c == '\t' {
+			continue
+		}
+		sb.WriteByte(c)
+	}
+	dec, err := base64.StdEncoding.DecodeString(sb.String())
+	if err != nil {
+		return "", err
+	}
+	return string(dec), nil
+}
+
+// autoproxyToken derives a host from one AutoProxy/GFWList rule line.
+//
+// Following this project's "take as much as possible" policy for GFWList, it
+// keeps hosts derived from path-scoped and @@ whitelist rules too, and drops
+// only regex rules (no single host is recoverable from them).
+func autoproxyToken(line string) (string, bool) {
+	s := strings.TrimSpace(line)
+	if s == "" || strings.HasPrefix(s, "!") || strings.HasPrefix(s, "[") {
+		return "", false
+	}
+	if strings.HasPrefix(s, "@@") {
+		s = s[2:]
+	}
+	if strings.HasPrefix(s, "/") && strings.HasSuffix(s, "/") {
+		return "", false // regex rule
+	}
+	if strings.HasPrefix(s, "||") {
+		s = s[2:]
+	} else {
+		s = strings.TrimLeft(s, "|.")
+	}
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "^/*?|="); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.Trim(s, ".")
+	return s, s != ""
 }
 
 func fetch(url, rawPath string) (io.ReadCloser, error) {
@@ -280,11 +368,34 @@ type targetReport struct {
 	SkippedDuplicate int `json:"skipped_parent_child_duplicate"`
 }
 
+// refReport records how one target's candidate set relates to a reference list
+// (e.g. accelerated candidates vs ChinaMax).
+type refReport struct {
+	Name          string `json:"name"`
+	Size          int    `json:"size"`
+	CandidatesIn  int    `json:"candidates_in_ref"`
+	CandidatesOut int    `json:"candidates_not_in_ref"`
+	KeptIn        int    `json:"kept_in_ref"`
+	KeptOut       int    `json:"kept_not_in_ref"`
+}
+
+type comparisonReport struct {
+	Target string      `json:"target"`
+	Refs   []refReport `json:"refs"`
+}
+
+type referenceReport struct {
+	Name    string `json:"name"`
+	Domains int    `json:"domains"`
+}
+
 type buildInfo struct {
 	GeneratedAt    string                  `json:"generated_at"`
 	UpstreamCommit string                  `json:"upstream_commit,omitempty"`
 	Sources        []sourceReport          `json:"sources"`
+	References     []referenceReport       `json:"references,omitempty"`
 	Targets        map[string]targetReport `json:"targets"`
+	Comparisons    []comparisonReport      `json:"comparisons,omitempty"`
 }
 
 func main() {
@@ -321,35 +432,56 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 	}
 
 	// Load base rule sets (flattened + deduplicated by the upstream builder).
+	// A target marked base_optional (e.g. our own gfwlist, which upstream does
+	// not provide) starts from an empty base when the file is absent.
 	baseSets := map[string]*ruleSet{}
 	for target, t := range cfg.Targets {
-		rs, err := parseExported(filepath.Join(basePath, t.BaseList+".txt"))
+		p := filepath.Join(basePath, t.BaseList+".txt")
+		if _, err := os.Stat(p); err != nil {
+			if t.BaseOptional {
+				baseSets[target] = newRuleSet()
+				continue
+			}
+			return fmt.Errorf("load base list %q for target %q: %w", t.BaseList, target, err)
+		}
+		rs, err := parseExported(p)
 		if err != nil {
 			return fmt.Errorf("load base list %q for target %q: %w", t.BaseList, target, err)
 		}
 		baseSets[target] = rs
 	}
-	excludeSets := map[string][]*ruleSet{}
-	for target, t := range cfg.Targets {
+
+	// Base exclude sets, loaded once per distinct list name. Generated lists
+	// (via the includes map) are merged in later, at resolve time.
+	baseExcludes := map[string]*ruleSet{}
+	loadExclude := func(name string) error {
+		if _, ok := baseExcludes[name]; ok {
+			return nil
+		}
+		rs, err := parseExported(filepath.Join(basePath, name+".txt"))
+		if err != nil {
+			return err
+		}
+		baseExcludes[name] = rs
+		return nil
+	}
+	for _, t := range cfg.Targets {
 		for _, name := range t.ExcludeLists {
-			rs, err := parseExported(filepath.Join(basePath, name+".txt"))
-			if err != nil {
-				return fmt.Errorf("load exclude list %q for target %q: %w", name, target, err)
+			if err := loadExclude(name); err != nil {
+				return fmt.Errorf("load exclude list %q: %w", name, err)
 			}
-			excludeSets[target] = append(excludeSets[target], rs)
 		}
 	}
 
-	// Collect candidates per target.
+	// Collect candidates per target; reference sources yield comparison sets only.
 	candidates := map[string]map[string]struct{}{}
 	for _, t := range cfg.Targets {
 		candidates[t.BaseList] = map[string]struct{}{}
 	}
+	references := map[string]*ruleSet{}
+
 	info := buildInfo{GeneratedAt: time.Now().UTC().Format(time.RFC3339), UpstreamCommit: upstreamSHA}
 	for _, src := range cfg.Sources {
-		if _, ok := cfg.Targets[src.Target]; !ok {
-			return fmt.Errorf("source %q targets unknown list %q", src.Name, src.Target)
-		}
 		rawFile := ""
 		if rawDir != "" {
 			rawFile = filepath.Join(rawDir, src.Name+".raw")
@@ -362,6 +494,21 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		body.Close()
 		if err != nil {
 			return fmt.Errorf("source %q: %w", src.Name, err)
+		}
+
+		if src.Reference {
+			rs := newRuleSet()
+			for _, d := range domains {
+				rs.roots[d] = struct{}{}
+			}
+			references[src.Name] = rs
+			info.References = append(info.References, referenceReport{Name: src.Name, Domains: len(domains)})
+			fmt.Printf("[ref   ] %-18s format=%-8s domains=%d\n", src.Name, src.Format, len(domains))
+			continue
+		}
+
+		if _, ok := cfg.Targets[src.Target]; !ok {
+			return fmt.Errorf("source %q targets unknown list %q", src.Name, src.Target)
 		}
 		targetBase := cfg.Targets[src.Target].BaseList
 		added := 0
@@ -376,12 +523,35 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		info.Sources = append(info.Sources, sourceReport{Name: src.Name, Target: src.Target, Raw: len(domains), Accepted: added})
 	}
 
-	// Resolve each target: dedup among candidates, then filter against base + excludes.
+	// Resolve targets in dependency order. A target that excludes a list L must
+	// wait until every list that L "includes" has been generated, because a
+	// generated list (gfwlist) is folded into L's effective exclude set here —
+	// this is what makes the "cn compares against the expanded geolocation-!cn"
+	// rule work without a separate gfwlist comparison.
+	order, err := resolveOrder(cfg)
+	if err != nil {
+		return err
+	}
+
 	info.Targets = map[string]targetReport{}
-	for target, t := range cfg.Targets {
+	generated := map[string]*ruleSet{}
+	for _, target := range order {
+		t := cfg.Targets[target]
 		targetBase := t.BaseList
 		cand := candidates[targetBase]
 		base := baseSets[target]
+
+		// Effective excludes = base file for the name + any generated list it includes.
+		var excludes []*ruleSet
+		for _, name := range t.ExcludeLists {
+			rs := cloneRuleSet(baseExcludes[name])
+			for _, inc := range cfg.Includes[name] {
+				if g, ok := generated[inc]; ok {
+					rs.merge(g)
+				}
+			}
+			excludes = append(excludes, rs)
+		}
 
 		ordered := make([]string, 0, len(cand))
 		for d := range cand {
@@ -404,7 +574,7 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 				continue
 			}
 			conflict := false
-			for _, ex := range excludeSets[target] {
+			for _, ex := range excludes {
 				if ex.covered(d) {
 					conflict = true
 					break
@@ -423,8 +593,13 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		}
 		tr.Added = len(kept)
 		info.Targets[target] = tr
+		generated[target] = keptSet
 		fmt.Printf("[target] %-18s base=%-6d added=%-7d covered=%-6d conflict=%-4d dup=%d\n",
 			targetBase, tr.BaseRules, tr.Added, tr.SkippedCovered, tr.SkippedConflict, tr.SkippedDuplicate)
+
+		if len(references) > 0 && len(cand) > 0 {
+			info.Comparisons = append(info.Comparisons, compareWithRefs(targetBase, cand, kept, references))
+		}
 
 		if dryRun || len(kept) == 0 {
 			continue
@@ -432,6 +607,21 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		sort.Strings(kept)
 		if err := appendToData(filepath.Join(dataDir, targetBase), kept); err != nil {
 			return fmt.Errorf("append to %q: %w", targetBase, err)
+		}
+	}
+
+	// Fold generated lists into their containers via include: directives
+	// (e.g. geolocation-!cn gets "include:gfwlist").
+	if !dryRun {
+		containers := make([]string, 0, len(cfg.Includes))
+		for c := range cfg.Includes {
+			containers = append(containers, c)
+		}
+		sort.Strings(containers)
+		for _, container := range containers {
+			if err := appendIncludes(filepath.Join(dataDir, container), cfg.Includes[container]); err != nil {
+				return fmt.Errorf("append include to %q: %w", container, err)
+			}
 		}
 	}
 
@@ -452,7 +642,7 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 }
 
 func appendToData(path string, domains []string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -463,4 +653,115 @@ func appendToData(path string, domains []string) error {
 		fmt.Fprintf(w, "domain:%s\n", d)
 	}
 	return w.Flush()
+}
+
+// appendIncludes appends "include:<name>" directives to a container data file.
+func appendIncludes(path string, includes []string) error {
+	if len(includes) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	fmt.Fprintf(w, "\n# --- includes merged by geosite builder (auto-generated, do not edit) ---\n")
+	for _, inc := range includes {
+		fmt.Fprintf(w, "include:%s\n", inc)
+	}
+	return w.Flush()
+}
+
+func cloneRuleSet(rs *ruleSet) *ruleSet {
+	out := newRuleSet()
+	for k := range rs.roots {
+		out.roots[k] = struct{}{}
+	}
+	for k := range rs.fulls {
+		out.fulls[k] = struct{}{}
+	}
+	return out
+}
+
+// resolveOrder returns target names topologically sorted so that any list a
+// target's exclude_lists "includes" is generated first.
+func resolveOrder(cfg Config) ([]string, error) {
+	names := make([]string, 0, len(cfg.Targets))
+	for n := range cfg.Targets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	deps := map[string]map[string]struct{}{}
+	for n, t := range cfg.Targets {
+		set := map[string]struct{}{}
+		for _, ex := range t.ExcludeLists {
+			for _, inc := range cfg.Includes[ex] {
+				// Skip self: a list that excludes its own container (gfwlist
+				// excludes geolocation-!cn, which includes gfwlist) still only
+				// needs the pure base for that exclusion.
+				if inc == n {
+					continue
+				}
+				if _, ok := cfg.Targets[inc]; ok {
+					set[inc] = struct{}{}
+				}
+			}
+		}
+		deps[n] = set
+	}
+
+	var order []string
+	done := map[string]bool{}
+	for len(order) < len(names) {
+		progress := false
+		for _, n := range names {
+			if done[n] {
+				continue
+			}
+			ready := true
+			for d := range deps[n] {
+				if !done[d] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				order = append(order, n)
+				done[n] = true
+				progress = true
+			}
+		}
+		if !progress {
+			return nil, errors.New("circular include/exclude dependency among targets")
+		}
+	}
+	return order, nil
+}
+
+// compareWithRefs reports how a target's candidates and kept set split against
+// each reference list (e.g. ChinaMax).
+func compareWithRefs(target string, cand map[string]struct{}, kept []string, refs map[string]*ruleSet) comparisonReport {
+	cr := comparisonReport{Target: target}
+	for name, ref := range refs {
+		rr := refReport{Name: name, Size: len(ref.roots)}
+		for d := range cand {
+			if ref.covered(d) {
+				rr.CandidatesIn++
+			} else {
+				rr.CandidatesOut++
+			}
+		}
+		for _, d := range kept {
+			if ref.covered(d) {
+				rr.KeptIn++
+			} else {
+				rr.KeptOut++
+			}
+		}
+		cr.Refs = append(cr.Refs, rr)
+	}
+	sort.Slice(cr.Refs, func(i, j int) bool { return cr.Refs[i].Name < cr.Refs[j].Name })
+	return cr
 }

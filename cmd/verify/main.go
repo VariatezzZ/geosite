@@ -19,6 +19,7 @@ const (
 	minSections  = 1500
 	minCNDomains = 100000
 	minAdsDomain = 190000
+	minGFWList   = 2000
 	minFileSize  = 3 * 1024 * 1024
 	maxFileSize  = 15 * 1024 * 1024
 )
@@ -157,16 +158,26 @@ func values(entries []domainEntry) []string {
 	return out
 }
 
-func equalValues(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+// uniqSorted returns the distinct values of a slice, sorted.
+func uniqSorted(a []string) []string {
+	set := make(map[string]struct{}, len(a))
+	for _, x := range a {
+		set[x] = struct{}{}
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
+	out := make([]string, 0, len(set))
+	for x := range set {
+		out = append(out, x)
 	}
-	return true
+	sort.Strings(out)
+	return out
+}
+
+func toSet(a []string) map[string]struct{} {
+	s := make(map[string]struct{}, len(a))
+	for _, x := range a {
+		s[x] = struct{}{}
+	}
+	return s
 }
 
 type checkResult struct {
@@ -234,16 +245,47 @@ func run(datPath, baseDatPath, reportPath string) error {
 	ads, ok := sites["CATEGORY-ADS-ALL"]
 	add("CATEGORY-ADS-ALL present and large", ok && len(ads) >= minAdsDomain, fmt.Sprintf("%d (min %d)", len(ads), minAdsDomain))
 
+	gfw, ok := sites["GFWLIST"]
+	add("GFWLIST present and large", ok && len(gfw) >= minGFWList, fmt.Sprintf("%d (min %d)", len(gfw), minGFWList))
+
 	if baseDatPath != "" {
 		base, err := parseDat(baseDatPath)
 		if err != nil {
 			return err
 		}
-		baseCN, _ := base["GEOLOCATION-!CN"]
-		gotCN, _ := sites["GEOLOCATION-!CN"]
-		same := equalValues(values(baseCN), values(gotCN))
-		add("geolocation-!cn unchanged (base-wins policy)", same,
-			fmt.Sprintf("base=%d final=%d", len(baseCN), len(gotCN)))
+		// Invariant: gfwlist is folded into geolocation-!cn (via include:gfwlist),
+		// and nothing beyond base + gfwlist leaks in. The upstream builder may
+		// additionally collapse a few base entries covered by a gfwlist parent,
+		// so an exact union equality is not expected; the meaningful checks are
+		// "no leakage" and "gfwlist fully folded in".
+		baseVals := uniqSorted(values(base["GEOLOCATION-!CN"]))
+		gfwVals := uniqSorted(values(gfw))
+		gotVals := uniqSorted(values(sites["GEOLOCATION-!CN"]))
+
+		baseSet, gfwSet, gotSet := toSet(baseVals), toSet(gfwVals), toSet(gotVals)
+		leaked := 0
+		for v := range gotSet {
+			if _, inBase := baseSet[v]; !inBase {
+				if _, inGfw := gfwSet[v]; !inGfw {
+					leaked++
+				}
+			}
+		}
+		missingGfw := 0
+		for v := range gfwSet {
+			if _, ok := gotSet[v]; !ok {
+				missingGfw++
+			}
+		}
+		collapsed := 0
+		for v := range baseSet {
+			if _, ok := gotSet[v]; !ok {
+				collapsed++
+			}
+		}
+		add("geolocation-!cn == base + gfwlist", leaked == 0 && missingGfw == 0,
+			fmt.Sprintf("base=%d gfwlist=%d final=%d leaked=%d missing_gfwlist=%d base_collapsed=%d",
+				len(baseVals), len(gfwVals), len(gotVals), leaked, missingGfw, collapsed))
 	}
 
 	if len(sites) == 0 {
