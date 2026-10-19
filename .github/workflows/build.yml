@@ -2,8 +2,6 @@ name: Build geosite.dat
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 22 * * *"
   push:
     branches:
       - master

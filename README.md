@@ -1,6 +1,6 @@
 # geosite
 
-每日定时构建 `geosite.dat`：以 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) 的**最新数据**为基底，依据 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) 的增强思路，叠加**中国域名**、**被墙域名（GFWList）**与**广告域名**，去重后打包。
+构建 `geosite.dat`：以 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) 的**最新数据**为基底，依据 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) 的增强思路，叠加**中国域名**、**被墙域名（GFWList）**与**广告域名**，去重后打包。
 
 ## 与官方 `dlc.dat` 的区别
 
@@ -46,7 +46,7 @@
 
 ```
 .
-├─ .github/workflows/build.yml   构建流程（定时 + 手动触发 + 构建相关文件变更时自动触发）
+├─ .github/workflows/build.yml   构建流程（手动触发 + 构建相关文件变更时自动触发）
 ├─ cmd/merge/main.go             展开比对、去重、冲突过滤、追加数据
 ├─ cmd/verify/main.go            产物体检（自带的轻量 protobuf 解析）
 ├─ lookup/main.go                按域名反查命中的分类（独立模块的本地排障小工具）
@@ -87,6 +87,12 @@ geosite:geolocation-!cn
 
 产物同时提供 `geosite.dat.sha256sum`、`build-info.json`（记录上游 commit 与各源统计）、`verify.json`。
 
+## 定时更新（可选）
+
+本仓库**不使用** GitHub Actions 自带的 `schedule` 定时器：其触发延迟严重，**实际观测延迟可达数小时**，高峰期还可能被跳过。
+
+如需每日自动更新，建议使用外部调度器（服务器 `crontab`、cron-job.org 等）调用 GitHub API 的 `workflow_dispatch` 触发本 workflow。Token 使用仅授予 **Actions: write** 权限的 fine-grained PAT，只保存在调度器侧，切勿提交到仓库。
+
 ## 按域名反查（lookup）
 
 `lookup/` 是一个独立小工具（自带模块、零第三方依赖），按 v2ray/xray 的匹配语义反查某个域名命中了哪些分类，便于判断该走代理还是直连：
@@ -110,7 +116,7 @@ www.google.com
 
 ## 体检与上游同步
 
-每日构建会把上游最新 commit 拉下来，构建后自动体检：
+每次构建会把上游最新 commit 拉下来，构建后自动体检：
 
 - section 数量、`cn` / `category-ads-all` / `gfwlist` 条目数下限；
 - **`geolocation-!cn` = 基底 + `gfwlist`**：无越界域名泄漏，且 `gfwlist` 全部并入；
