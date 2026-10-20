@@ -27,12 +27,6 @@
       "target": "gfwlist"
     },
     {
-      "name": "chinamax",
-      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Domain.yaml",
-      "format": "clash",
-      "reference": true
-    },
-    {
       "name": "china-domains",
       "url": "https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf",
       "format": "dnsmasq",

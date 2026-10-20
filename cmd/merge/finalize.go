@@ -152,12 +152,12 @@ func writeVerifySource(verifyDir, name string, kept map[string][]string) error {
 	return nil
 }
 
-func writeFinalListManifest(basePath string, names []string) error {
+func writeFinalListManifest(verifyDir string, names []string) error {
 	var buf bytes.Buffer
 	for _, name := range names {
 		fmt.Fprintf(&buf, "%s\n", name)
 	}
-	if err := os.WriteFile(filepath.Join(basePath, "final-lists.txt"), buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(verifyDir, "final-lists.txt"), buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write final list manifest: %w", err)
 	}
 	return nil

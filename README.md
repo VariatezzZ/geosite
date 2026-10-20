@@ -54,7 +54,7 @@
 ├─ cmd/merge/finalize.go         打包前展开裁剪，只保留三个最终分类
 ├─ cmd/verify/main.go            产物体检（自带的轻量 protobuf 解析）
 ├─ lookup/main.go                按域名反查命中的分类（独立模块的本地排障小工具）
-└─ config/sources.json           外部源定义（URL / 格式 / 目标清单 / includes / final_lists / verify_sources / reference）
+└─ config/sources.json           外部源定义（URL / 格式 / 目标清单 / includes / final_lists / verify_sources）
 ```
 
 ## 本地构建

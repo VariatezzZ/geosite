@@ -43,11 +43,10 @@ type Target struct {
 }
 
 type Source struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	Format    string `json:"format"`
-	Target    string `json:"target"`
-	Reference bool   `json:"reference"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Format string `json:"format"`
+	Target string `json:"target"`
 }
 
 type Config struct {
@@ -246,15 +245,6 @@ func extract(format string, r io.Reader) ([]string, error) {
 				continue
 			}
 			raw = fields[1]
-		case "clash":
-			//   - 'example.com'   /   - '+.example.com'
-			f := strings.TrimSpace(line)
-			if !strings.HasPrefix(f, "-") {
-				continue
-			}
-			f = strings.TrimSpace(strings.TrimPrefix(f, "-"))
-			f = strings.Trim(f, "'\"")
-			raw = strings.TrimPrefix(f, "+.")
 		default:
 			return nil, fmt.Errorf("unknown source format %q", format)
 		}
@@ -370,34 +360,11 @@ type targetReport struct {
 	SkippedDuplicate int `json:"skipped_parent_child_duplicate"`
 }
 
-// refReport records how one target's candidate set relates to a reference list
-// (e.g. accelerated candidates vs ChinaMax).
-type refReport struct {
-	Name          string `json:"name"`
-	Size          int    `json:"size"`
-	CandidatesIn  int    `json:"candidates_in_ref"`
-	CandidatesOut int    `json:"candidates_not_in_ref"`
-	KeptIn        int    `json:"kept_in_ref"`
-	KeptOut       int    `json:"kept_not_in_ref"`
-}
-
-type comparisonReport struct {
-	Target string      `json:"target"`
-	Refs   []refReport `json:"refs"`
-}
-
-type referenceReport struct {
-	Name    string `json:"name"`
-	Domains int    `json:"domains"`
-}
-
 type buildInfo struct {
 	GeneratedAt      string                  `json:"generated_at"`
 	UpstreamCommit   string                  `json:"upstream_commit,omitempty"`
 	Sources          []sourceReport          `json:"sources"`
-	References       []referenceReport       `json:"references,omitempty"`
 	Targets          map[string]targetReport `json:"targets"`
-	Comparisons      []comparisonReport      `json:"comparisons,omitempty"`
 	FinalLists       []string                `json:"final_lists,omitempty"`
 	PackagedSections int                     `json:"packaged_sections,omitempty"`
 }
@@ -480,12 +447,11 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		}
 	}
 
-	// Collect candidates per target; reference sources yield comparison sets only.
+	// Collect candidates per target.
 	candidates := map[string]map[string]struct{}{}
 	for _, t := range cfg.Targets {
 		candidates[t.BaseList] = map[string]struct{}{}
 	}
-	references := map[string]*ruleSet{}
 
 	info := buildInfo{GeneratedAt: time.Now().UTC().Format(time.RFC3339), UpstreamCommit: upstreamSHA}
 	for _, src := range cfg.Sources {
@@ -501,17 +467,6 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		body.Close()
 		if err != nil {
 			return fmt.Errorf("source %q: %w", src.Name, err)
-		}
-
-		if src.Reference {
-			rs := newRuleSet()
-			for _, d := range domains {
-				rs.roots[d] = struct{}{}
-			}
-			references[src.Name] = rs
-			info.References = append(info.References, referenceReport{Name: src.Name, Domains: len(domains)})
-			fmt.Printf("[ref   ] %-18s format=%-8s domains=%d\n", src.Name, src.Format, len(domains))
-			continue
 		}
 
 		if _, ok := cfg.Targets[src.Target]; !ok {
@@ -604,10 +559,6 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		generated[target] = keptSet
 		fmt.Printf("[target] %-18s base=%-6d added=%-7d covered=%-6d conflict=%-4d dup=%d\n",
 			targetBase, tr.BaseRules, tr.Added, tr.SkippedCovered, tr.SkippedConflict, tr.SkippedDuplicate)
-
-		if len(references) > 0 && len(cand) > 0 {
-			info.Comparisons = append(info.Comparisons, compareWithRefs(targetBase, cand, kept, references))
-		}
 
 		sort.Strings(kept)
 		keptDomains[target] = kept
@@ -704,30 +655,4 @@ func resolveOrder(cfg Config) ([]string, error) {
 		}
 	}
 	return order, nil
-}
-
-// compareWithRefs reports how a target's candidates and kept set split against
-// each reference list (e.g. ChinaMax).
-func compareWithRefs(target string, cand map[string]struct{}, kept []string, refs map[string]*ruleSet) comparisonReport {
-	cr := comparisonReport{Target: target}
-	for name, ref := range refs {
-		rr := refReport{Name: name, Size: len(ref.roots)}
-		for d := range cand {
-			if ref.covered(d) {
-				rr.CandidatesIn++
-			} else {
-				rr.CandidatesOut++
-			}
-		}
-		for _, d := range kept {
-			if ref.covered(d) {
-				rr.KeptIn++
-			} else {
-				rr.KeptOut++
-			}
-		}
-		cr.Refs = append(cr.Refs, rr)
-	}
-	sort.Slice(cr.Refs, func(i, j int) bool { return cr.Refs[i].Name < cr.Refs[j].Name })
-	return cr
 }
