@@ -51,9 +51,11 @@ type Source struct {
 }
 
 type Config struct {
-	Targets  map[string]Target   `json:"targets"`
-	Includes map[string][]string `json:"includes"`
-	Sources  []Source            `json:"sources"`
+	Targets       map[string]Target   `json:"targets"`
+	Includes      map[string][]string `json:"includes"`
+	FinalLists    []string            `json:"final_lists"`
+	VerifySources []string            `json:"verify_sources"`
+	Sources       []Source            `json:"sources"`
 }
 
 // ruleSet is the flattened view of one base list.
@@ -390,12 +392,14 @@ type referenceReport struct {
 }
 
 type buildInfo struct {
-	GeneratedAt    string                  `json:"generated_at"`
-	UpstreamCommit string                  `json:"upstream_commit,omitempty"`
-	Sources        []sourceReport          `json:"sources"`
-	References     []referenceReport       `json:"references,omitempty"`
-	Targets        map[string]targetReport `json:"targets"`
-	Comparisons    []comparisonReport      `json:"comparisons,omitempty"`
+	GeneratedAt      string                  `json:"generated_at"`
+	UpstreamCommit   string                  `json:"upstream_commit,omitempty"`
+	Sources          []sourceReport          `json:"sources"`
+	References       []referenceReport       `json:"references,omitempty"`
+	Targets          map[string]targetReport `json:"targets"`
+	Comparisons      []comparisonReport      `json:"comparisons,omitempty"`
+	FinalLists       []string                `json:"final_lists,omitempty"`
+	PackagedSections int                     `json:"packaged_sections,omitempty"`
 }
 
 func main() {
@@ -406,7 +410,7 @@ func main() {
 		reportPath    = flag.String("report", "./build-info.json", "path of the JSON report to write")
 		rawDir        = flag.String("rawdir", "", "optional directory with pre-downloaded raw files named <source-name>.raw")
 		upstreamSHA   = flag.String("upstream-sha", "", "upstream commit SHA recorded in the report")
-		dryRun        = flag.Bool("dry-run", false, "do not append anything to the data directory")
+		dryRun        = flag.Bool("dry-run", false, "do not write anything to the data directory")
 	)
 	flag.Parse()
 
@@ -424,6 +428,9 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
+	}
+	if err := validateFinalConfig(cfg); err != nil {
+		return fmt.Errorf("validate config: %w", err)
 	}
 
 	dataDir := filepath.Join(communityPath, "data")
@@ -535,6 +542,7 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 
 	info.Targets = map[string]targetReport{}
 	generated := map[string]*ruleSet{}
+	keptDomains := map[string][]string{}
 	for _, target := range order {
 		t := cfg.Targets[target]
 		targetBase := t.BaseList
@@ -601,28 +609,18 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 			info.Comparisons = append(info.Comparisons, compareWithRefs(targetBase, cand, kept, references))
 		}
 
-		if dryRun || len(kept) == 0 {
-			continue
-		}
 		sort.Strings(kept)
-		if err := appendToData(filepath.Join(dataDir, targetBase), kept); err != nil {
-			return fmt.Errorf("append to %q: %w", targetBase, err)
-		}
+		keptDomains[target] = kept
 	}
 
-	// Fold generated lists into their containers via include: directives
-	// (e.g. geolocation-!cn gets "include:gfwlist").
 	if !dryRun {
-		containers := make([]string, 0, len(cfg.Includes))
-		for c := range cfg.Includes {
-			containers = append(containers, c)
+		// Replace the upstream include structure with fully expanded copies of
+		// the configured final lists, then drop every other data file.
+		if err := finalizeData(dataDir, basePath, cfg, keptDomains); err != nil {
+			return err
 		}
-		sort.Strings(containers)
-		for _, container := range containers {
-			if err := appendIncludes(filepath.Join(dataDir, container), cfg.Includes[container]); err != nil {
-				return fmt.Errorf("append include to %q: %w", container, err)
-			}
-		}
+		info.FinalLists = append([]string(nil), cfg.FinalLists...)
+		info.PackagedSections = len(cfg.FinalLists)
 	}
 
 	if reportPath != "" {
@@ -639,38 +637,6 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 	}
 	fmt.Println("[done] merge completed")
 	return nil
-}
-
-func appendToData(path string, domains []string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
-	fmt.Fprintf(w, "\n# --- merged external domains (auto-generated, do not edit) ---\n")
-	for _, d := range domains {
-		fmt.Fprintf(w, "domain:%s\n", d)
-	}
-	return w.Flush()
-}
-
-// appendIncludes appends "include:<name>" directives to a container data file.
-func appendIncludes(path string, includes []string) error {
-	if len(includes) == 0 {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
-	fmt.Fprintf(w, "\n# --- includes merged by geosite builder (auto-generated, do not edit) ---\n")
-	for _, inc := range includes {
-		fmt.Fprintf(w, "include:%s\n", inc)
-	}
-	return w.Flush()
 }
 
 func cloneRuleSet(rs *ruleSet) *ruleSet {

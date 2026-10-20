@@ -1,4 +1,6 @@
 {
+  "final_lists": ["cn", "geolocation-!cn", "category-ads-all"],
+  "verify_sources": ["gfwlist"],
   "targets": {
     "gfwlist": {
       "base_list": "gfwlist",
