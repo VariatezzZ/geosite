@@ -96,6 +96,8 @@ geosite:category-ads-all
 
 产物同时提供 `geosite.dat.sha256sum`、`build-info.json`（记录上游 commit、各源统计与最终分类）、`verify.json`。
 
+每次发布后只保留**最近 5 个** release（含 tag 与附件），更早的版本会自动清理；需要长期留存的版本请自行备份。
+
 ## 定时更新（可选）
 
 本仓库**不使用** GitHub Actions 自带的 `schedule` 定时器：其触发延迟严重，**实际观测延迟可达数小时**，高峰期还可能被跳过。
