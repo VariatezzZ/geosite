@@ -53,7 +53,7 @@
 ├─ cmd/merge/finalize.go         打包前展开裁剪，只保留三个最终分类
 ├─ cmd/verify/main.go            产物体检
 ├─ internal/geosite/dat.go       共用的 GeoSite dat 解码（轻量 protobuf wire 解析）
-├─ lookup/main.go                按域名反查命中的分类（独立模块的本地排障小工具）
+├─ lookup/main.go                按域名反查命中的分类 (复用 internal/geosite 的本地排障工具)
 └─ config/sources.json           外部源定义（URL / 格式 / 目标清单 / includes / final_lists / verify_sources）
 ```
 
@@ -105,7 +105,7 @@ geosite:category-ads-all
 
 ## 按域名反查（lookup）
 
-`lookup/` 是一个独立小工具（自带模块、零第三方依赖），按 v2ray/xray 的匹配语义反查某个域名命中了哪些分类，便于判断该走代理还是直连：
+`lookup/` 是本地排障小工具, 复用仓库的 `internal/geosite` 解码器, 零第三方依赖. 它按 v2ray/xray 的匹配语义反查某个域名命中了哪些分类, 便于判断该走代理还是直连. 编译后的二进制可单独复制运行:
 
 ```bash
 cd lookup && go build -o lookup .

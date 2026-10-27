@@ -34,7 +34,6 @@ func values(entries []geosite.Rule) []string {
 	for _, e := range entries {
 		out = append(out, e.Value)
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -288,13 +287,12 @@ func parseCSVUpper(s string) []string {
 }
 
 var (
-	exportAttrSuffix = regexp.MustCompile(`:@[a-z0-9!]+(?:,@[a-z0-9!]+)*$`)
-	spaceAttrSuffix  = regexp.MustCompile(`(?: @[a-z0-9!]+)+$`)
+	spaceAttrSuffix = regexp.MustCompile(`(?: @[a-z0-9!]+)+$`)
 )
 
 // parsePlainList reads a flattened list and returns the values of its rules,
-// ignoring comments and attributes. Both the exporter syntax (":@a,@b") and
-// the data input syntax (" @a @b") are accepted.
+// ignoring comments and trailing attributes. It accepts the data input syntax
+// ("domain:value @a @b"), which is what merge writes for verification.
 func parsePlainList(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -320,7 +318,6 @@ func parsePlainList(path string) ([]string, error) {
 			continue
 		}
 		if typ == "regexp" {
-			rest = exportAttrSuffix.ReplaceAllString(rest, "")
 			rest = spaceAttrSuffix.ReplaceAllString(rest, "")
 		} else if idx := strings.IndexAny(rest, ": "); idx >= 0 {
 			rest = rest[:idx]

@@ -117,14 +117,7 @@ func (rs *ruleSet) merge(other *ruleSet) {
 // validDomain mirrors upstream's validateDomainName so that anything we append
 // is guaranteed to pass the upstream build.
 func validDomain(d string) bool {
-	if d == "" || len(d) > maxDomainLen {
-		return false
-	}
-	for i := 0; i < len(d); i++ {
-		c := d[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' {
-			continue
-		}
+	if len(d) > maxDomainLen || !validRuleChars(d) {
 		return false
 	}
 	for _, label := range strings.Split(d, ".") {
@@ -578,12 +571,7 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 
 func cloneRuleSet(rs *ruleSet) *ruleSet {
 	out := newRuleSet()
-	for k := range rs.roots {
-		out.roots[k] = struct{}{}
-	}
-	for k := range rs.fulls {
-		out.fulls[k] = struct{}{}
-	}
+	out.merge(rs)
 	return out
 }
 
