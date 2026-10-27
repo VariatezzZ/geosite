@@ -1,36 +1,30 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
-)
 
-// Attributes are exported as a trailing ":@a,@b" suffix, while the data input
-// syntax expects space-separated attributes. This pattern matches the suffix
-// without truncating colons that may appear inside a regexp value.
-var exportedAttrSuffix = regexp.MustCompile(`:@[a-z0-9!]+(?:,[a-z0-9!]+)*$`)
+	"github.com/VariatezzZ/geosite/internal/geosite"
+)
 
 // finalizeData replaces the upstream include structure with fully expanded
 // copies of the configured final lists and removes every other data file.
 //
 // Each final list is rebuilt from two sources:
-//   - the flattened base export produced by the upstream builder, converted
-//     from its export syntax to the data input syntax so every rule type and
-//     attribute is preserved;
+//   - the matching section decoded from the upstream base.dat, preserving every
+//     rule type and attribute;
 //   - the plain domains accepted by this run for the matching target and for
 //     any generated list folded into it via includes.
 //
 // Auxiliary files used by the verifier are written under a dedicated
-// subdirectory next to the base exports, so they can never be mistaken for a
-// base list on the next run.
-func finalizeData(dataDir, basePath string, cfg Config, kept map[string][]string) error {
+// subdirectory next to the base dat, so they can never be mistaken for base
+// data on the next run.
+func finalizeData(dataDir, basePath string, baseDat map[string]geosite.Section, cfg Config, kept map[string][]string) error {
 	verifyDir := filepath.Join(basePath, "verify")
 	if err := os.MkdirAll(verifyDir, 0o755); err != nil {
 		return fmt.Errorf("create verify directory: %w", err)
@@ -43,7 +37,7 @@ func finalizeData(dataDir, basePath string, cfg Config, kept map[string][]string
 
 	finals := make([]flatList, 0, len(cfg.FinalLists))
 	for _, name := range cfg.FinalLists {
-		body, err := buildFinalList(basePath, name, targetsByBase, cfg, kept)
+		body, err := buildFinalList(baseDat, name, targetsByBase, cfg, kept)
 		if err != nil {
 			return err
 		}
@@ -77,23 +71,18 @@ type flatList struct {
 	body []byte
 }
 
-func buildFinalList(basePath, name string, targetsByBase map[string][]string, cfg Config, kept map[string][]string) ([]byte, error) {
+func buildFinalList(baseDat map[string]geosite.Section, name string, targetsByBase map[string][]string, cfg Config, kept map[string][]string) ([]byte, error) {
 	if !validListName(name) {
 		return nil, fmt.Errorf("invalid final list name %q", name)
 	}
 
 	var buf bytes.Buffer
-	baseFile := filepath.Join(basePath, name+".txt")
-	if data, err := os.ReadFile(baseFile); err == nil {
-		if len(data) > 0 {
-			if err := writeExportedList(&buf, data); err != nil {
-				return nil, fmt.Errorf("normalize base list %q: %w", name, err)
-			}
+	if sec, ok := baseDat[strings.ToUpper(name)]; ok {
+		if err := writeSection(&buf, sec); err != nil {
+			return nil, fmt.Errorf("write base section %q: %w", name, err)
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read base list %q: %w", name, err)
 	} else if t, ok := cfg.Targets[name]; !ok || !t.BaseOptional {
-		return nil, fmt.Errorf("base list %q not found under the base directory", name)
+		return nil, fmt.Errorf("base section %q not found in base.dat", name)
 	}
 
 	seen := map[string]struct{}{}
@@ -210,52 +199,96 @@ func validateFinalConfig(cfg Config) error {
 	return nil
 }
 
-// writeExportedList converts a flattened export into data input syntax. The
-// upstream exporter writes attributes as ":@a,@b", while data files expect
-// separate " @a @b" fields.
-func writeExportedList(dst *bytes.Buffer, data []byte) error {
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+// writeSection renders one base section in upstream data input syntax. Every
+// attribute is emitted as a separate " @attr" field, so rules with multiple
+// attributes survive the round trip.
+func writeSection(dst *bytes.Buffer, sec geosite.Section) error {
+	for _, r := range sec.Rules {
+		typ, ok := ruleTypeName(r.Type)
+		if !ok {
+			return fmt.Errorf("unsupported rule type %d in section %q", r.Type, sec.Name)
 		}
-		normalized, err := normalizeExportedLine(line)
-		if err != nil {
-			return err
+		if err := validateRuleValue(r); err != nil {
+			return fmt.Errorf("section %q: %w", sec.Name, err)
 		}
-		dst.WriteString(normalized)
+		fmt.Fprintf(dst, "%s:%s", typ, r.Value)
+		attrs := append([]string(nil), r.Attrs...)
+		sort.Strings(attrs)
+		prev := ""
+		for _, attr := range attrs {
+			if attr == prev {
+				continue
+			}
+			prev = attr
+			if !validAttr(attr) {
+				return fmt.Errorf("section %q: invalid attribute %q", sec.Name, attr)
+			}
+			fmt.Fprintf(dst, " @%s", attr)
+		}
 		dst.WriteByte('\n')
 	}
-	return sc.Err()
+	return nil
 }
 
-func normalizeExportedLine(line string) (string, error) {
-	typ, rest, ok := strings.Cut(line, ":")
-	if !ok {
-		typ, rest = "domain", line
-	}
-	switch typ {
-	case "domain", "full", "keyword", "regexp":
+func ruleTypeName(t geosite.RuleType) (string, bool) {
+	switch t {
+	case geosite.RuleDomain:
+		return "domain", true
+	case geosite.RuleFull:
+		return "full", true
+	case geosite.RuleKeyword:
+		return "keyword", true
+	case geosite.RuleRegexp:
+		return "regexp", true
 	default:
-		return "", fmt.Errorf("unsupported exported rule type %q", typ)
+		return "", false
 	}
+}
 
-	attrs := ""
-	if loc := exportedAttrSuffix.FindStringIndex(rest); loc != nil {
-		attrs = rest[loc[0]+1:] // drop the leading ':'
-		rest = rest[:loc[0]]
+func validateRuleValue(r geosite.Rule) error {
+	switch r.Type {
+	case geosite.RuleDomain, geosite.RuleFull:
+		if !validDomain(r.Value) {
+			return fmt.Errorf("invalid domain %q", r.Value)
+		}
+	case geosite.RuleKeyword:
+		if !validRuleChars(r.Value) {
+			return fmt.Errorf("invalid keyword %q", r.Value)
+		}
+	case geosite.RuleRegexp:
+		if strings.ContainsAny(r.Value, " \t\r\n#") {
+			return fmt.Errorf("regexp value contains whitespace or comment marker: %q", r.Value)
+		}
 	}
-	if rest == "" {
-		return "", fmt.Errorf("empty value in exported line %q", line)
-	}
+	return nil
+}
 
-	out := typ + ":" + rest
-	if attrs != "" {
-		out += " " + strings.ReplaceAll(attrs, ",", " ")
+func validRuleChars(s string) bool {
+	if s == "" {
+		return false
 	}
-	return out, nil
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validAttr(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '!' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validListName(name string) bool {

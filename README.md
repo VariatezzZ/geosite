@@ -32,8 +32,7 @@
 
 基底数据使用 `include:` 语法组织，因此本项目**不自行解析 include**，而是：
 
-1. 先用上游构建器把基底展开成「已解析 + 已父子去重」的平铺清单
-   （`go run ./ --exportlists=cn,geolocation-!cn,category-ads-all`）；
+1. 先用上游构建器生成 `base.dat`（已解析 + 已父子去重）；`cmd/merge` 直接解码其中的 section，不再依赖上游的文本导出格式；
 2. `cmd/merge` 先处理 `gfwlist`：解析 GFWList（base64 + AutoProxy 规则），
    减掉与基底 `cn`、基底 `geolocation-!cn` 冲突的域名，得到本次保留的 gfwlist 域名；
 3. 再处理 `cn`：`cn` 的排除集是展开后的 `geolocation-!cn`（基底 `!cn` ∪ gfwlist），然后按域名语义比对：
@@ -41,7 +40,7 @@
    - `full:` 仅精确匹配；
    只把「基底没有、且不与展开后的 `geolocation-!cn` 冲突」的域名并入 `cn`；
 4. 广告源并入 `category-ads-all`；
-5. 打包前裁剪：用基底平铺清单 + 本次新增域名生成 3 份最终清单，
+5. 打包前裁剪：用 `base.dat` 的 section + 本次新增域名生成 3 份最终清单，
    清空 `data` 后只写回 `cn` / `geolocation-!cn` / `category-ads-all`，其余分类全部删除；
 6. 最后交给上游构建器打包，上游会再做一次父子去重。
 
@@ -52,7 +51,8 @@
 ├─ .github/workflows/build.yml   构建流程（手动触发 + 构建相关文件变更时自动触发）
 ├─ cmd/merge/main.go             展开比对、去重、冲突过滤、合并
 ├─ cmd/merge/finalize.go         打包前展开裁剪，只保留三个最终分类
-├─ cmd/verify/main.go            产物体检（自带的轻量 protobuf 解析）
+├─ cmd/verify/main.go            产物体检
+├─ internal/geosite/dat.go       共用的 GeoSite dat 解码（轻量 protobuf wire 解析）
 ├─ lookup/main.go                按域名反查命中的分类（独立模块的本地排障小工具）
 └─ config/sources.json           外部源定义（URL / 格式 / 目标清单 / includes / final_lists / verify_sources）
 ```
@@ -63,9 +63,8 @@
 # 1. 准备基底与上游构建器
 git clone --depth=1 https://github.com/v2fly/domain-list-community community
 
-# 2. 导出基底展开清单
-(cd community && go run ./ --outputdir=../base --outputname=base.dat \
-  --exportlists=cn,geolocation-!cn,category-ads-all)
+# 2. 生成基底 dat（含全部平铺 section）
+(cd community && go run ./ --outputdir=../base --outputname=base.dat)
 
 # 3. 叠加外部源
 go run ./cmd/merge --community ./community --base ./base \

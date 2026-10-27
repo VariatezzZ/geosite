@@ -2,10 +2,11 @@
 // freshly checked out v2fly/domain-list-community data directory.
 //
 // Design notes:
-//   - The base data is NOT re-parsed here. Instead we consume the flattened,
-//     already-deduplicated lists exported by the upstream builder
-//     (`go run ./ --exportlists=...`). This reuses upstream's include resolution,
-//     attribute filtering, full/domain precedence and parent-domain de-duplication.
+//   - The base data is NOT re-parsed here. Instead we decode the flattened,
+//     already-deduplicated GeoSite dat produced by the upstream builder
+//     (`go run ./ --outputdir=... --outputname=base.dat`). This reuses
+//     upstream's include resolution, attribute filtering, full/domain
+//     precedence and parent-domain de-duplication.
 //   - Every candidate domain is skipped when it is already covered by the base
 //     list, and for the "cn" target also when it is covered by geolocation-!cn
 //     (conflict policy "base wins": such domains stay in the proxy list and are
@@ -28,6 +29,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/VariatezzZ/geosite/internal/geosite"
 )
 
 const (
@@ -67,43 +70,24 @@ func newRuleSet() *ruleSet {
 	return &ruleSet{roots: map[string]struct{}{}, fulls: map[string]struct{}{}}
 }
 
-// parseExported reads a plaintext list exported by the upstream builder.
-// Line format is `type:value` optionally followed by `:@attr1,@attr2`.
-func parseExported(path string) (*ruleSet, error) {
+// rulesFromSection extracts the coverage rules of one base section. Keyword and
+// regexp rules are intentionally ignored, matching the previous text-based
+// parser: coverage checks only need domain and full semantics.
+func rulesFromSection(sec geosite.Section) *ruleSet {
 	rs := newRuleSet()
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		typ, rest, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		value := rest
-		if idx := strings.Index(rest, ":"); idx >= 0 { // strip trailing attributes
-			value = rest[:idx]
-		}
-		value = strings.ToLower(strings.TrimSpace(value))
+	for _, r := range sec.Rules {
+		value := strings.ToLower(strings.TrimSpace(r.Value))
 		if value == "" {
 			continue
 		}
-		switch typ {
-		case "domain":
+		switch r.Type {
+		case geosite.RuleDomain:
 			rs.roots[value] = struct{}{}
-		case "full":
+		case geosite.RuleFull:
 			rs.fulls[value] = struct{}{}
 		}
 	}
-	return rs, sc.Err()
+	return rs
 }
 
 // covered reports whether d is already matched by the rule set, honouring
@@ -372,7 +356,7 @@ type buildInfo struct {
 func main() {
 	var (
 		communityPath = flag.String("community", "./community", "path of the v2fly/domain-list-community checkout")
-		basePath      = flag.String("base", "./base", "directory containing exported base lists (*.txt)")
+		basePath      = flag.String("base", "./base", "directory containing the exported base.dat")
 		configPath    = flag.String("config", "./config/sources.json", "path of sources.json")
 		reportPath    = flag.String("report", "./build-info.json", "path of the JSON report to write")
 		rawDir        = flag.String("rawdir", "", "optional directory with pre-downloaded raw files named <source-name>.raw")
@@ -405,24 +389,26 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		return fmt.Errorf("data directory not found at %q: %w", dataDir, err)
 	}
 
-	// Load base rule sets (flattened + deduplicated by the upstream builder).
-	// A target marked base_optional (e.g. our own gfwlist, which upstream does
-	// not provide) starts from an empty base when the file is absent.
+	// Load the flattened base data once. The upstream builder produces a
+	// GeoSite dat file, which is a far more stable contract than its plaintext
+	// export format.
+	baseDatPath := filepath.Join(basePath, "base.dat")
+	baseDat, err := geosite.ReadDat(baseDatPath)
+	if err != nil {
+		return fmt.Errorf("load base dat %q: %w", baseDatPath, err)
+	}
+
 	baseSets := map[string]*ruleSet{}
 	for target, t := range cfg.Targets {
-		p := filepath.Join(basePath, t.BaseList+".txt")
-		if _, err := os.Stat(p); err != nil {
+		sec, ok := baseDat[strings.ToUpper(t.BaseList)]
+		if !ok {
 			if t.BaseOptional {
 				baseSets[target] = newRuleSet()
 				continue
 			}
-			return fmt.Errorf("load base list %q for target %q: %w", t.BaseList, target, err)
+			return fmt.Errorf("base section %q for target %q not found in %q", t.BaseList, target, baseDatPath)
 		}
-		rs, err := parseExported(p)
-		if err != nil {
-			return fmt.Errorf("load base list %q for target %q: %w", t.BaseList, target, err)
-		}
-		baseSets[target] = rs
+		baseSets[target] = rulesFromSection(sec)
 	}
 
 	// Base exclude sets, loaded once per distinct list name. Generated lists
@@ -432,11 +418,11 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 		if _, ok := baseExcludes[name]; ok {
 			return nil
 		}
-		rs, err := parseExported(filepath.Join(basePath, name+".txt"))
-		if err != nil {
-			return err
+		sec, ok := baseDat[strings.ToUpper(name)]
+		if !ok {
+			return fmt.Errorf("exclude section %q not found in %q", name, baseDatPath)
 		}
-		baseExcludes[name] = rs
+		baseExcludes[name] = rulesFromSection(sec)
 		return nil
 	}
 	for _, t := range cfg.Targets {
@@ -567,7 +553,7 @@ func run(communityPath, basePath, configPath, reportPath, rawDir, upstreamSHA st
 	if !dryRun {
 		// Replace the upstream include structure with fully expanded copies of
 		// the configured final lists, then drop every other data file.
-		if err := finalizeData(dataDir, basePath, cfg, keptDomains); err != nil {
+		if err := finalizeData(dataDir, basePath, baseDat, cfg, keptDomains); err != nil {
 			return err
 		}
 		info.FinalLists = append([]string(nil), cfg.FinalLists...)

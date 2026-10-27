@@ -9,6 +9,7 @@ on:
       - ".github/workflows/build.yml"
       - "cmd/**"
       - "config/**"
+      - "internal/**"
       - "go.mod"
 
 permissions:
@@ -43,11 +44,10 @@ jobs:
           go-version-file: community/go.mod
           cache-dependency-path: community/go.sum
 
-      - name: Export base lists (flattened and deduplicated by upstream)
+      - name: Export base dat (flattened and deduplicated by upstream)
         run: |
           cd community
-          go run ./ --outputdir=../base --outputname=base.dat \
-            --exportlists=cn,geolocation-!cn,category-ads-all
+          go run ./ --outputdir=../base --outputname=base.dat
 
       - name: Merge external sources into the data directory
         run: |
